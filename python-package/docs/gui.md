@@ -207,8 +207,7 @@ Reports are written to:
 ~/.insightface/gui/reports
 ```
 
-Markdown and HTML are always supported. PDF is generated when `reportlab` is
-available. Install `insightface[pdf]` to add PDF report export.
+Markdown, HTML, and PDF are supported when the GUI extra is installed.
 
 ## Face Swap
 

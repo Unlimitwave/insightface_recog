@@ -120,7 +120,6 @@ jobs:
           assert "Requires-Dist: onnxruntime" in package_metadata
           assert "Requires-Dist: opencv-python" in package_metadata
           assert "Provides-Extra: gui" in package_metadata
-          assert "Provides-Extra: pdf" in package_metadata
           assert "Requires-Dist: PySide6-Essentials" in package_metadata
           assert "Requires-Dist: reportlab" in package_metadata
           assert "Requires-Dist: pandas" not in package_metadata

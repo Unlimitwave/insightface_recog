@@ -89,8 +89,7 @@ Click **Export Report** after an evaluation. Reports include:
 12. Commercial Licensing Next Steps
 13. Appendix: Raw Results
 
-Markdown and HTML are always supported. PDF is available when `reportlab` is
-installed. Install `insightface[pdf]` to add PDF report export.
+Markdown, HTML, and PDF are supported when the GUI extra is installed.
 
 ## Commercial License Notice
 
