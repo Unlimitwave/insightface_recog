@@ -47,11 +47,11 @@ class ModelDownloadPage(BasePage):
                 self.button("Open GitHub Releases", self.open_releases),
             )
         )
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["asset", "kind", "release", "size", "updated_at", "local status", "download url"]
+            ["asset", "source", "kind", "release", "size", "updated_at", "local status", "download url"]
         )
-        configure_table_columns(self.table, [210, 80, 110, 90, 170, 130, 360])
+        configure_table_columns(self.table, [210, 100, 150, 130, 90, 170, 150, 360])
         self.content.addWidget(self.table, 1)
         self.url_label = QLabel()
         self.url_label.setWordWrap(True)
@@ -67,6 +67,7 @@ class ModelDownloadPage(BasePage):
         for row, asset in enumerate(self.assets):
             values = [
                 asset.name,
+                asset.source,
                 asset.kind,
                 asset.tag_name,
                 self._format_size(asset.size),
@@ -130,7 +131,16 @@ class ModelDownloadPage(BasePage):
             self.set_status(f"Model set to {asset.stem}. Open Models and test model load.")
         elif asset.name.endswith(".onnx"):
             path = Path(self.context.config.model_root).expanduser() / "models" / asset.stem / asset.name
-            self.set_status(f"ONNX model path: {path}")
+            if "gfpgan" in asset.name.lower():
+                self.context.config.gfpgan_model_path = str(path)
+                save_config(self.context.config)
+                self.set_status(f"GFPGAN model set to {path}. Enable GFPGAN in Models > Runtime to use it after face swap.")
+            elif "swap" in asset.name.lower() or "inswapper" in asset.name.lower():
+                self.context.config.swap_model_path = str(path)
+                save_config(self.context.config)
+                self.set_status(f"Face swap model set to {path}.")
+            else:
+                self.set_status(f"ONNX model path: {path}")
         else:
             self.set_status("Selected asset cannot be used as a model package.")
 

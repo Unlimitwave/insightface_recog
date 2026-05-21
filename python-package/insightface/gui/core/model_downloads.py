@@ -22,6 +22,11 @@ GITHUB_RELEASES_URL = "https://github.com/deepinsight/insightface/releases"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/deepinsight/insightface/releases/latest"
 FALLBACK_RELEASE_TAG = "v0.7"
 FALLBACK_RELEASE_NAME = "insightface v0.7 model packages"
+GFPGAN_MODEL_NAME = "GFPGANv1.4.onnx"
+GFPGAN_DOWNLOAD_URL = (
+    "https://huggingface.co/datasets/Gourieff/ReActor/resolve/main/"
+    "models/facerestore_models/GFPGANv1.4.onnx?download=true"
+)
 
 
 @dataclass
@@ -33,6 +38,7 @@ class ModelAsset:
     size: int = 0
     content_type: str = ""
     updated_at: str = ""
+    source: str = "InsightFace"
 
     @property
     def stem(self) -> str:
@@ -44,6 +50,8 @@ class ModelAsset:
 
     @property
     def kind(self) -> str:
+        if self.source.lower() != "insightface":
+            return "third-party restore model"
         if self.name.endswith(".zip"):
             return "model package"
         if self.name.endswith(".onnx"):
@@ -64,7 +72,7 @@ def fallback_model_assets() -> List[ModelAsset]:
         "inswapper_128.onnx",
         "scrfd_person_2.5g.onnx",
     ]
-    return [
+    assets = [
         ModelAsset(
             name=name,
             browser_download_url=f"https://github.com/deepinsight/insightface/releases/download/{FALLBACK_RELEASE_TAG}/{name}",
@@ -73,6 +81,31 @@ def fallback_model_assets() -> List[ModelAsset]:
         )
         for name in names
     ]
+    return merge_required_assets(assets)
+
+
+def third_party_model_assets() -> List[ModelAsset]:
+    return [
+        ModelAsset(
+            name=GFPGAN_MODEL_NAME,
+            browser_download_url=GFPGAN_DOWNLOAD_URL,
+            tag_name="third-party",
+            release_name="Gourieff/ReActor GFPGAN face restore",
+            size=340 * 1024 * 1024,
+            content_type="application/octet-stream",
+            source="third party",
+        )
+    ]
+
+
+def merge_required_assets(assets: Iterable[ModelAsset]) -> List[ModelAsset]:
+    merged = list(assets)
+    seen = {asset.name for asset in merged}
+    for asset in third_party_model_assets():
+        if asset.name not in seen:
+            merged.append(asset)
+            seen.add(asset.name)
+    return merged
 
 
 def cache_file(gui_cache_dir: str | os.PathLike[str]) -> Path:
@@ -90,6 +123,7 @@ def asset_from_dict(data: dict) -> ModelAsset:
         size=int(data.get("size") or 0),
         content_type=str(data.get("content_type", "")),
         updated_at=str(data.get("updated_at", "")),
+        source=str(data.get("source", "InsightFace")),
     )
 
 
@@ -99,7 +133,8 @@ def load_cached_assets(gui_cache_dir: str | os.PathLike[str]) -> List[ModelAsset
         return fallback_model_assets()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return [asset_from_dict(item) for item in payload.get("assets", []) if item.get("browser_download_url")]
+        assets = [asset_from_dict(item) for item in payload.get("assets", []) if item.get("browser_download_url")]
+        return merge_required_assets(assets)
     except Exception:
         return fallback_model_assets()
 
@@ -154,7 +189,8 @@ def refresh_model_assets(gui_cache_dir: str | os.PathLike[str], timeout: int = 2
         assets = fallback_model_assets()
         message = f"Latest release returned no model assets; using bundled {FALLBACK_RELEASE_TAG} URLs."
     else:
-        message = f"Refreshed {len(assets)} asset(s) from GitHub release {tag}."
+        assets = merge_required_assets(assets)
+        message = f"Refreshed {len(assets)} asset(s), including third-party restore models."
     save_cached_assets(gui_cache_dir, assets, source=GITHUB_LATEST_RELEASE_API)
     return assets, message
 
@@ -193,6 +229,13 @@ def list_installed_swap_models(model_root: str | os.PathLike[str]) -> list[Path]
         if "swap" in name or "inswapper" in name or "swap" in parent or "inswapper" in parent:
             paths.append(path)
     return sorted(paths)
+
+
+def list_installed_gfpgan_models(model_root: str | os.PathLike[str]) -> list[Path]:
+    root = Path(model_root).expanduser() / "models"
+    if not root.exists():
+        return []
+    return sorted(path for path in root.rglob("*.onnx") if "gfpgan" in path.name.lower())
 
 
 def download_model_asset(

@@ -93,9 +93,8 @@ Open **Models** from the top app bar or **Tools > Models** to choose:
 - model pack: `buffalo_l`, `buffalo_s`, `antelopev2`, or a custom model folder
 - provider: Auto, CPU, CUDA when `CUDAExecutionProvider` is available
 - detection size: Auto, 128x128, 320x320, 640x640, 1024x1024
-- recognition threshold
-- batch worker count
-- video frame interval
+- face swap model
+- GFPGAN post-processing model, if `GFPGANv1.4.onnx` has been downloaded
 
 **Auto** detection size is the default. It runs joint 128x128 and 640x640
 detection and merges duplicate boxes.
@@ -103,6 +102,11 @@ detection and merges duplicate boxes.
 The Runtime tab also lets you choose a face swap model. Only downloaded local
 swap models are listed. Download `inswapper_128.onnx` or another compatible
 swap model from **Models > Downloads** first.
+
+The Runtime tab can also enable GFPGAN post-processing for face swap. GFPGAN is
+listed in **Models > Downloads** as a third-party restore model and is not
+downloaded automatically. When enabled, face swap output is passed through the
+configured GFPGAN ONNX model using a 512x512 restore pass.
 
 The GUI opens even when a model is missing. In that case, pages show
 `Model is not loaded. Please open Models.`
@@ -119,6 +123,11 @@ The refreshed URLs are cached in:
 ```text
 ~/.insightface/gui/cache/model_download_urls.json
 ```
+
+The GFPGANv1.4 third-party entry is added by the GUI alongside refreshed
+InsightFace release assets. It points to the Hugging Face `resolve/main` file
+URL for `Gourieff/ReActor` and is saved under the same local model root after
+manual download.
 
 Downloaded archives are cached in:
 
@@ -140,7 +149,8 @@ For example:
 ```
 
 Users can also manually place model directories under `~/.insightface/models/`
-or configure a custom model directory in **Models > Custom Model Directory**.
+or choose **custom model directory** from **Models > Runtime** to reveal the
+custom directory field.
 
 ## Face Recognition
 
@@ -216,6 +226,8 @@ Markdown, HTML, and PDF are supported when the GUI extra is installed.
 Open **Face Swap** to use the full-width Source + Target = Result workspace.
 Choose the swap model in **Models > Runtime**; the page itself does not expose a
 model picker. The swap model is loaded only when you click **Run Face Swap**.
+If GFPGAN post-processing is enabled in **Models > Runtime**, the swapped image
+or swapped video frames are restored with GFPGAN before being saved.
 
 Source is always an image. Target can be an image or a video, and the workflow
 automatically chooses image swap or video swap from the target file type. Video

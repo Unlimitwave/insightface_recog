@@ -72,6 +72,9 @@ click **Refresh Download URLs** to read the latest GitHub Releases
 asset URLs, then explicitly download the selected package. Downloaded zip files
 are cached under ``~/.insightface/gui/cache/models`` and extracted under
 ``~/.insightface/models/<model_name>/``.
+The Downloads tab also lists GFPGANv1.4 as a third-party face restoration
+model. After it is downloaded, enable **GFPGAN post-processing** in
+**Models > Runtime** to run 512x512 GFPGAN restoration after face swap.
 Detection size defaults to **Auto**, which runs joint 128x128 and 640x640
 detection. Face swap models are selected in **Models > Runtime** from already
 downloaded swap models only; the Face Swap workspace loads the configured swap

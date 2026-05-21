@@ -158,7 +158,12 @@ class FaceSwapPage(BasePage):
         target_image = self.target_image.copy() if self.target_image is not None and target_kind == "image" else None
 
         def task(progress=None, is_cancelled=None):
-            swapper = FaceSwapEngine(model_path, providers_from_choice(self.context.config.provider))
+            swapper = FaceSwapEngine(
+                model_path,
+                providers_from_choice(self.context.config.provider),
+                gfpgan_model_path=getattr(self.context.config, "gfpgan_model_path", ""),
+                enable_gfpgan=bool(getattr(self.context.config, "enable_gfpgan", False)),
+            )
             if not swapper.load():
                 raise ValueError(swapper.last_error)
             source_face = self.context.engine.detect_best_face(source_image, source_path=self.source_path)

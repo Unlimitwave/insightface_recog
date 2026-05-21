@@ -54,7 +54,13 @@ def test_main_window_smoke(tmp_path):
     assert settings_dialog.theme.count() >= 7
     assert not hasattr(settings_dialog, "workspace")
     assert not hasattr(settings_dialog, "default_mode")
-    dialogs = [settings_dialog, ModelManagerDialog(window.context, window), LicenseDialog(window.context, window)]
+    model_dialog = ModelManagerDialog(window.context, window)
+    assert not hasattr(model_dialog.runtime_page, "threshold")
+    assert not hasattr(model_dialog.runtime_page, "workers")
+    assert not hasattr(model_dialog.runtime_page, "frame_interval")
+    assert hasattr(model_dialog.runtime_page, "gfpgan_enabled")
+    assert hasattr(model_dialog.runtime_page, "gfpgan_model_combo")
+    dialogs = [settings_dialog, model_dialog, LicenseDialog(window.context, window)]
     for dialog in dialogs:
         dialog.close()
     window.close()

@@ -60,6 +60,8 @@ class AppConfig:
     safe_mode: bool = False
     auto_load_model: bool = True
     swap_model_path: str = ""
+    enable_gfpgan: bool = False
+    gfpgan_model_path: str = ""
 
     def __post_init__(self) -> None:
         if self.det_size is None:

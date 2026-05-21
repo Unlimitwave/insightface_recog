@@ -4,24 +4,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QTextEdit, QDoubleSpinBox
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QBrush
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QLineEdit, QTextEdit
 
 from ..core.config import save_config
 from ..core.face_engine import FaceEngine, is_cuda_provider_available, providers_from_choice
-from ..core.model_downloads import is_model_package_installed, list_installed_swap_models
+from ..core.model_downloads import is_model_package_installed, list_installed_gfpgan_models, list_installed_swap_models
 from .base import BasePage
 
 
 class ModelSettingsPage(BasePage):
     def __init__(self, context, parent=None):
-        super().__init__(context, "Model Settings", "Configure model packs, execution provider, thresholds, and runtime checks.", parent)
+        super().__init__(context, "Model Settings", "Configure model packs, execution provider, face swap models, and runtime checks.", parent)
         form = QFormLayout()
         self.model_combo = QComboBox()
         self.model_packages = ["buffalo_l", "buffalo_m", "buffalo_s", "buffalo_sc", "antelopev2"]
-        self.model_combo.addItems([*self.model_packages, "custom model directory"])
-        self._update_model_availability()
-        self.model_combo.setCurrentText(context.config.model_name if context.config.model_name in self.model_packages else "custom model directory")
+        self._rebuild_model_combo()
         self.custom_dir = QLineEdit(context.config.custom_model_dir)
+        self.custom_dir_label = None
+        self._update_model_availability()
+        self.model_combo.currentIndexChanged.connect(self._update_custom_dir_visibility)
         self.provider_combo = QComboBox()
         self.provider_combo.addItems(["Auto", "CPU", "CUDA"])
         self.provider_combo.setCurrentText(context.config.provider)
@@ -31,24 +34,18 @@ class ModelSettingsPage(BasePage):
         self.det_combo.setCurrentText(context.config.det_size_label)
         self.swap_model_combo = QComboBox()
         self._update_swap_model_choices()
-        self.threshold = QDoubleSpinBox()
-        self.threshold.setRange(0.0, 1.0)
-        self.threshold.setSingleStep(0.01)
-        self.threshold.setValue(context.config.recognition_threshold)
-        self.workers = QSpinBox()
-        self.workers.setRange(1, 16)
-        self.workers.setValue(context.config.batch_worker_count)
-        self.frame_interval = QSpinBox()
-        self.frame_interval.setRange(1, 300)
-        self.frame_interval.setValue(context.config.video_frame_interval)
+        self.gfpgan_enabled = QCheckBox("Enable GFPGAN restore after face swap")
+        self.gfpgan_enabled.setChecked(bool(getattr(context.config, "enable_gfpgan", False)))
+        self.gfpgan_model_combo = QComboBox()
+        self._update_gfpgan_model_choices()
         form.addRow("Model package", self.model_combo)
         form.addRow("Custom model directory", self.custom_dir)
+        self.custom_dir_label = form.labelForField(self.custom_dir)
         form.addRow("Provider", self.provider_combo)
         form.addRow("Detection size", self.det_combo)
         form.addRow("Face swap model", self.swap_model_combo)
-        form.addRow("Recognition threshold", self.threshold)
-        form.addRow("Batch workers", self.workers)
-        form.addRow("Video frame interval", self.frame_interval)
+        form.addRow("GFPGAN post-processing", self.gfpgan_enabled)
+        form.addRow("GFPGAN model", self.gfpgan_model_combo)
         self.content.addLayout(form)
         self.runtime = QTextEdit()
         self.runtime.setReadOnly(True)
@@ -63,10 +60,11 @@ class ModelSettingsPage(BasePage):
             )
         )
         self.refresh()
+        self._update_custom_dir_visibility()
 
     def _apply_to_config(self) -> None:
         cfg = self.context.config
-        chosen = self.model_combo.currentText()
+        chosen = self.model_combo.currentData()
         cfg.model_name = chosen if chosen != "custom model directory" else self.custom_dir.text().strip()
         cfg.custom_model_dir = self.custom_dir.text().strip()
         provider = self.provider_combo.currentText()
@@ -77,9 +75,8 @@ class ModelSettingsPage(BasePage):
             size = self.det_combo.currentText().split("x")
             cfg.det_size = [int(size[0]), int(size[1])]
         cfg.swap_model_path = str(self.swap_model_combo.currentData() or "")
-        cfg.recognition_threshold = float(self.threshold.value())
-        cfg.batch_worker_count = int(self.workers.value())
-        cfg.video_frame_interval = int(self.frame_interval.value())
+        cfg.gfpgan_model_path = str(self.gfpgan_model_combo.currentData() or "")
+        cfg.enable_gfpgan = bool(self.gfpgan_enabled.isChecked() and cfg.gfpgan_model_path)
 
     def save(self) -> None:
         self._apply_to_config()
@@ -122,6 +119,7 @@ class ModelSettingsPage(BasePage):
         self._update_model_availability()
         self._update_provider_availability()
         self._update_swap_model_choices()
+        self._update_gfpgan_model_choices()
         info = self.context.engine.get_runtime_info()
         self.runtime.setPlainText("\n".join(f"{key}: {value}" for key, value in info.items()))
 
@@ -151,6 +149,12 @@ class ModelSettingsPage(BasePage):
                 continue
             installed = is_model_package_installed(package, self.context.config.model_root)
             item.setEnabled(installed)
+            item.setText(package if installed else f"{package} (not downloaded)")
+            item.setData(package, Qt.UserRole)
+            if installed:
+                item.setData(None, Qt.ForegroundRole)
+            else:
+                item.setForeground(QBrush(QColor("#9ca3af")))
             item.setToolTip(
                 f"{package} is installed under {self.context.config.model_root}/models."
                 if installed
@@ -159,6 +163,25 @@ class ModelSettingsPage(BasePage):
         custom_item = model.item(len(self.model_packages))
         if custom_item is not None:
             custom_item.setEnabled(True)
+            custom_item.setText("custom model directory")
+            custom_item.setData("custom model directory", Qt.UserRole)
+        current = self.context.config.model_name if self.context.config.model_name in self.model_packages else "custom model directory"
+        index = self.model_combo.findData(current)
+        if index >= 0:
+            self.model_combo.setCurrentIndex(index)
+        self._update_custom_dir_visibility()
+
+    def _rebuild_model_combo(self) -> None:
+        self.model_combo.clear()
+        for package in self.model_packages:
+            self.model_combo.addItem(package, package)
+        self.model_combo.addItem("custom model directory", "custom model directory")
+
+    def _update_custom_dir_visibility(self) -> None:
+        is_custom = self.model_combo.currentData() == "custom model directory"
+        self.custom_dir.setVisible(is_custom)
+        if hasattr(self, "custom_dir_label") and self.custom_dir_label is not None:
+            self.custom_dir_label.setVisible(is_custom)
 
     def _update_swap_model_choices(self) -> None:
         current = getattr(self.context.config, "swap_model_path", "")
@@ -182,3 +205,30 @@ class ModelSettingsPage(BasePage):
                 self.swap_model_combo.addItem(Path(current).name, current)
                 self.swap_model_combo.setCurrentIndex(self.swap_model_combo.count() - 1)
         self.swap_model_combo.blockSignals(False)
+
+    def _update_gfpgan_model_choices(self) -> None:
+        current = getattr(self.context.config, "gfpgan_model_path", "")
+        paths = list_installed_gfpgan_models(self.context.config.model_root)
+        self.gfpgan_model_combo.blockSignals(True)
+        self.gfpgan_model_combo.clear()
+        if not paths:
+            self.gfpgan_model_combo.addItem("No downloaded GFPGAN models", "")
+            self.gfpgan_model_combo.setEnabled(False)
+            self.gfpgan_enabled.setEnabled(False)
+            self.gfpgan_model_combo.setToolTip("Download GFPGANv1.4.onnx from Models > Downloads first.")
+            self.gfpgan_enabled.setToolTip("GFPGAN is unavailable until a GFPGAN model is downloaded.")
+        else:
+            self.gfpgan_model_combo.setEnabled(True)
+            self.gfpgan_enabled.setEnabled(True)
+            self.gfpgan_model_combo.setToolTip("Only downloaded GFPGAN restore models are shown.")
+            self.gfpgan_enabled.setToolTip("Run GFPGAN face restoration after face swap.")
+            for path in paths:
+                label = f"{Path(path).parent.name}/{Path(path).name}"
+                self.gfpgan_model_combo.addItem(label, str(path))
+            index = self.gfpgan_model_combo.findData(current)
+            if index >= 0:
+                self.gfpgan_model_combo.setCurrentIndex(index)
+            elif current and Path(current).exists():
+                self.gfpgan_model_combo.addItem(Path(current).name, current)
+                self.gfpgan_model_combo.setCurrentIndex(self.gfpgan_model_combo.count() - 1)
+        self.gfpgan_model_combo.blockSignals(False)

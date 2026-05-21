@@ -1,4 +1,4 @@
-from insightface.gui.core.model_downloads import fallback_model_assets, local_model_status
+from insightface.gui.core.model_downloads import GFPGAN_DOWNLOAD_URL, fallback_model_assets, local_model_status
 from insightface.gui.core.paths import default_workspace, workspace_paths
 
 
@@ -20,10 +20,15 @@ def test_workspace_paths_are_under_gui_workspace(tmp_path):
 def test_fallback_model_assets_have_github_release_urls(tmp_path):
     assets = fallback_model_assets()
     names = {asset.name for asset in assets}
-    assert {"buffalo_l.zip", "buffalo_s.zip", "antelopev2.zip"}.issubset(names)
+    assert {"buffalo_l.zip", "buffalo_s.zip", "antelopev2.zip", "GFPGANv1.4.onnx"}.issubset(names)
     for asset in assets:
-        assert asset.tag_name == "v0.7"
-        assert asset.browser_download_url.startswith(
-            "https://github.com/deepinsight/insightface/releases/download/v0.7/"
-        )
+        if asset.name == "GFPGANv1.4.onnx":
+            assert asset.source == "third party"
+            assert asset.kind == "third-party restore model"
+            assert asset.browser_download_url == GFPGAN_DOWNLOAD_URL
+        else:
+            assert asset.tag_name == "v0.7"
+            assert asset.browser_download_url.startswith(
+                "https://github.com/deepinsight/insightface/releases/download/v0.7/"
+            )
     assert local_model_status(assets[0], tmp_path) == "not installed"

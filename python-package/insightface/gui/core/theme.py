@@ -400,6 +400,10 @@ def application_stylesheet(theme: str | None) -> str:
         border: 1px solid {palette["border"]};
         selection-background-color: {palette["selection"]};
     }}
+    QComboBox QAbstractItemView::item:disabled {{
+        color: {palette["subtle"]};
+        background: {palette["surface_alt"]};
+    }}
     QListWidget {{
         background: transparent;
         border: 0;
