@@ -10,6 +10,33 @@ import numpy as np
 from .recognition import cosine_similarity, normalize_embedding
 
 
+class HDBSCANUnavailableError(RuntimeError):
+    """Raised when the required HDBSCAN implementation is not importable."""
+
+
+def hdbscan_status() -> tuple[bool, str]:
+    try:
+        from sklearn.cluster import HDBSCAN
+
+        return True, f"sklearn.cluster.HDBSCAN ({HDBSCAN.__module__})"
+    except Exception as sklearn_error:
+        try:
+            import hdbscan
+
+            return True, f"hdbscan package ({hdbscan.__name__})"
+        except Exception as hdbscan_error:
+            return (
+                False,
+                "HDBSCAN is required for Album clustering. Install scikit-learn with sklearn.cluster.HDBSCAN "
+                f"support or install the hdbscan package. sklearn error: {sklearn_error}; "
+                f"hdbscan error: {hdbscan_error}",
+            )
+
+
+def is_hdbscan_available() -> bool:
+    return hdbscan_status()[0]
+
+
 def cluster_embeddings(
     embeddings: Iterable[np.ndarray],
     threshold: float = 0.72,
@@ -73,9 +100,8 @@ def cluster_embeddings_hdbscan_auto(
 ) -> tuple[List[int], str]:
     """Cluster normalized embeddings with HDBSCAN and automatic density thresholds.
 
-    HDBSCAN chooses cluster density thresholds internally. If the optional
-    implementation is unavailable, fall back to an automatic-epsilon DBSCAN so
-    the album workflow remains usable without adding a hard GUI dependency.
+    HDBSCAN chooses cluster density thresholds internally. Album clustering
+    requires a real HDBSCAN implementation and does not silently fall back.
     """
 
     normalized = [normalize_embedding(embedding) for embedding in embeddings]
@@ -100,7 +126,7 @@ def cluster_embeddings_hdbscan_auto(
             kwargs["copy"] = True
         labels = HDBSCAN(**kwargs).fit_predict(distance_matrix)
         return [int(label) for label in labels], "HDBSCAN"
-    except Exception:
+    except Exception as sklearn_error:
         try:
             import hdbscan
 
@@ -110,10 +136,12 @@ def cluster_embeddings_hdbscan_auto(
                 metric="precomputed",
             ).fit_predict(distance_matrix)
             return [int(label) for label in labels], "HDBSCAN"
-        except Exception:
-            eps = _auto_dbscan_eps(distance_matrix, samples)
-            labels, _ = cluster_embeddings_dbscan(matrix, distance_threshold=eps, min_samples=samples)
-            return labels, "HDBSCAN unavailable; auto DBSCAN fallback"
+        except Exception as hdbscan_error:
+            raise HDBSCANUnavailableError(
+                "HDBSCAN is required for Album clustering. Install scikit-learn with sklearn.cluster.HDBSCAN "
+                f"support or install the hdbscan package. sklearn error: {sklearn_error}; "
+                f"hdbscan error: {hdbscan_error}"
+            ) from hdbscan_error
 
 
 def _cosine_distance_matrix(matrix: np.ndarray) -> np.ndarray:
@@ -121,13 +149,3 @@ def _cosine_distance_matrix(matrix: np.ndarray) -> np.ndarray:
     distances = (1.0 - similarity).astype(np.float64)
     np.fill_diagonal(distances, 0.0)
     return distances
-
-
-def _auto_dbscan_eps(distance_matrix: np.ndarray, min_samples: int) -> float:
-    if distance_matrix.shape[0] <= 1:
-        return 0.28
-    sorted_distances = np.sort(distance_matrix, axis=1)
-    neighbor_index = min(max(1, int(min_samples) - 1), sorted_distances.shape[1] - 1)
-    neighbor_distances = sorted_distances[:, neighbor_index]
-    eps = float(np.percentile(neighbor_distances, 75))
-    return min(0.45, max(0.12, eps))

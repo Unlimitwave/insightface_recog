@@ -60,6 +60,8 @@ def test_main_window_smoke(tmp_path):
     assert not hasattr(album_page, "match_threshold")
     assert album_page.min_face_size.value() == 80
     assert album_page.algorithm_label.text().startswith("Algorithm: HDBSCAN")
+    assert hasattr(album_page, "import_button")
+    assert hasattr(album_page, "rebuild_button")
     assert album_page.cluster_table.columnCount() == 2
     assert album_page.cluster_table.horizontalHeaderItem(0).text() == "Thumbnail"
     assert album_page.cluster_table.horizontalHeaderItem(1).text() == "Photos"

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.clustering import cluster_embeddings_hdbscan_auto
+from ..core.clustering import cluster_embeddings_hdbscan_auto, hdbscan_status
 from ..core.constants import DEFAULT_THRESHOLD
 from ..core.recognition import cosine_similarity, normalize_embedding
 from ..core.tooltips import set_button_tooltip
@@ -160,12 +160,14 @@ class AlbumPage(BasePage):
         hint.setProperty("role", "muted")
         controls_layout.addWidget(hint)
         button_row = QHBoxLayout()
+        self.import_button = self._button("Import / Refresh", self.import_refresh)
+        self.rebuild_button = self._button("Rebuild All", self.rebuild_all)
         for button in [
             self._button("Add Folder", self.add_folder),
             self._button("Remove Selected", self.remove_selected),
             self._button("Clear", self.clear_directories),
-            self._button("Import / Refresh", self.import_refresh),
-            self._button("Rebuild All", self.rebuild_all),
+            self.import_button,
+            self.rebuild_button,
         ]:
             button_row.addWidget(button)
         button_row.addStretch(1)
@@ -189,7 +191,11 @@ class AlbumPage(BasePage):
         settings_row.addWidget(self.algorithm_label)
         settings_row.addStretch(1)
         controls_layout.addLayout(settings_row)
+        self.hdbscan_notice = self.notice("")
+        self.hdbscan_notice.hide()
+        controls_layout.addWidget(self.hdbscan_notice)
         self.content.addWidget(controls)
+        self._update_hdbscan_availability()
 
         splitter = QSplitter(Qt.Horizontal)
         self.cluster_table = QTableWidget(0, 2)
@@ -237,9 +243,13 @@ class AlbumPage(BasePage):
         self.set_status("Album directories cleared. Existing clustering results are still available.")
 
     def import_refresh(self) -> None:
+        if not self._require_hdbscan():
+            return
         self._run_import_refresh(rebuild=False)
 
     def rebuild_all(self) -> None:
+        if not self._require_hdbscan():
+            return
         folders = [Path(folder) for folder in self.folder_list.folders()]
         if not folders:
             reply = QMessageBox.question(
@@ -267,6 +277,8 @@ class AlbumPage(BasePage):
             self._run_import_refresh(rebuild=True)
 
     def _run_import_refresh(self, rebuild: bool = False) -> None:
+        if not self._require_hdbscan():
+            return
         folders = [Path(folder) for folder in self.folder_list.folders()]
         if not folders:
             self.show_error("Add one or more album directories first.")
@@ -466,6 +478,7 @@ class AlbumPage(BasePage):
         self.context.storage.save_album_directories(self.folder_list.folders())
 
     def refresh(self) -> None:
+        self._update_hdbscan_availability()
         if self._loaded_saved_state:
             return
         self._loaded_saved_state = True
@@ -476,6 +489,30 @@ class AlbumPage(BasePage):
                 self.folder_list.addItem(folder)
         self.folder_list.blockSignals(False)
         self._load_saved_results()
+
+    def _update_hdbscan_availability(self) -> bool:
+        available, message = hdbscan_status()
+        self.import_button.setEnabled(available)
+        self.rebuild_button.setEnabled(available)
+        if available:
+            self.algorithm_label.setText("Algorithm: HDBSCAN (auto)")
+            self.hdbscan_notice.hide()
+            self.import_button.setToolTip("Scan selected folders and run complete HDBSCAN clustering.")
+            self.rebuild_button.setToolTip("Clear indexed album features and rebuild with HDBSCAN.")
+        else:
+            self.algorithm_label.setText("Algorithm: HDBSCAN required")
+            self.hdbscan_notice.setText(message)
+            self.hdbscan_notice.show()
+            self.import_button.setToolTip(message)
+            self.rebuild_button.setToolTip(message)
+            self.set_status(message)
+        return available
+
+    def _require_hdbscan(self) -> bool:
+        available = self._update_hdbscan_availability()
+        if not available:
+            self.show_error(self.hdbscan_notice.text())
+        return available
 
     def _load_saved_results(self) -> None:
         data = self.context.storage.load_album_results()
