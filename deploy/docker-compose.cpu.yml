@@ -1,0 +1,12 @@
+# CPU-only overlay (no NVIDIA GPU / no nvidia-container-toolkit)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+
+services:
+  face-api:
+    build:
+      args:
+        RUNTIME: cpu
+        BASE_IMAGE: ubuntu:22.04
+    image: facerecog-access-control:cpu
+    environment:
+      - DEVICE=cpu

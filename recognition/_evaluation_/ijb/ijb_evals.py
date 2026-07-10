@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
+import json
 import os
+import sys
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -7,6 +10,28 @@ from tqdm import tqdm
 from skimage import transform
 from sklearn.preprocessing import normalize
 from sklearn.metrics import roc_curve, auc
+
+_EVAL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _EVAL_ROOT not in sys.path:
+    sys.path.insert(0, _EVAL_ROOT)
+
+from metrics.production_metrics import (
+    FPIR_TARGETS_1N_DISPLAY,
+    FAR_TARGETS_11_DISPLAY,
+    compute_map_from_ranks,
+    far_label,
+    format_identification_table,
+    format_verification_table,
+    summarize_identification_metrics,
+    summarize_verification_metrics,
+    summarize_verification_metrics_from_roc,
+)
+
+
+def _log_stage(msg):
+    import time
+
+    print(">>>> [%s] %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
 
 
 class Mxnet_model_interf:
@@ -65,8 +90,26 @@ class Torch_model_interf:
 class ONNX_model_interf:
     def __init__(self, model_file, image_size=(112, 112)):
         import onnxruntime as ort
+        import glob
+        import site
+
+        # Try to load CUDA deps shipped via conda `nvidia-*` packages.
+        # This mirrors `recognition/_evaluation_/megaface/run_buffalo_l.sh`.
+        try:
+            nvidia_lib_paths = glob.glob(site.getsitepackages()[0] + "/nvidia/*/lib")
+            if nvidia_lib_paths:
+                ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
+                prefix = ":".join(nvidia_lib_paths)
+                os.environ["LD_LIBRARY_PATH"] = prefix + ((":" + ld_library_path) if ld_library_path else "")
+        except Exception:
+            pass
+
         ort.set_default_logger_severity(3)
-        self.ort_session = ort.InferenceSession(model_file)
+        # Prefer CUDA when available, otherwise fall back to CPU.
+        self.ort_session = ort.InferenceSession(
+            model_file, providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        print(">>>> ONNXRuntime providers:", self.ort_session.get_providers())
         self.output_names = [self.ort_session.get_outputs()[0].name]
         self.input_name = self.ort_session.get_inputs()[0].name
 
@@ -180,6 +223,61 @@ def extract_IJB_data_11(data_path, subset, save_path=None, force_reload=False):
     )
     print()
     return templates, medias, p1, p2, label, img_names, landmarks, face_scores
+
+
+IJB_1N_META_IJBC = (
+    "ijbc_1N_gallery_G1.csv",
+    "ijbc_1N_gallery_G2.csv",
+    "ijbc_1N_probe_mixed.csv",
+)
+IJB_1N_META_IJBB = (
+    "ijbb_1N_gallery_S1.csv",
+    "ijbb_1N_gallery_S2.csv",
+    "ijbb_1N_probe_mixed.csv",
+)
+
+
+def get_ijb_1n_meta_paths(data_path, subset):
+    if subset == "IJBC":
+        meta_dir = os.path.join(data_path, "IJBC", "meta")
+        names = IJB_1N_META_IJBC
+    else:
+        meta_dir = os.path.join(data_path, "IJBB", "meta")
+        names = IJB_1N_META_IJBB
+    return {name: os.path.join(meta_dir, name) for name in names}
+
+
+def check_ijb_1n_meta(data_path, subset):
+    """Ensure 1:N protocol CSVs exist before running hours-long embedding."""
+    paths = get_ijb_1n_meta_paths(data_path, subset)
+    missing = [name for name, path in paths.items() if not os.path.isfile(path)]
+    if not missing:
+        return paths
+    meta_dir = os.path.dirname(next(iter(paths.values())))
+    present = sorted(os.listdir(meta_dir)) if os.path.isdir(meta_dir) else []
+    raise FileNotFoundError(
+        "\n"
+        "========== IJB 1:N meta files missing ==========\n"
+        "Directory: %s\n"
+        "Missing (%d):\n  %s\n\n"
+        "Present meta files:\n  %s\n\n"
+        "1:1 evaluation only needs *_template_pair_label.txt (you already have these).\n"
+        "1:N requires 3 extra CSV protocol files — download InsightFace \"Updated Meta (1:1 and 1:N)\":\n"
+        "  GDrive: https://drive.google.com/file/d/1MXzrU_zUESSx_242pRUnVvW_wDzfU8Ky/view\n"
+        "  Baidu:  https://pan.baidu.com/s/1x-ytzg4zkCTOTtklUgAhfg  (code: 7g8o)\n\n"
+        "After download, copy the 3 CSV files into:\n"
+        "  %s/\n"
+        "Then re-run with -N.\n"
+        "See: recognition/_evaluation_/ijb/README.md\n"
+        "================================================"
+        % (
+            meta_dir,
+            len(missing),
+            "\n  ".join(missing),
+            "\n  ".join(present) if present else "(meta dir empty or not found)",
+            meta_dir,
+        )
+    )
 
 
 def extract_gallery_prob_data(data_path, subset, save_path=None, force_reload=False):
@@ -317,6 +415,7 @@ def evaluation_1N(query_feats, gallery_feats, query_ids, reg_ids, fars=[0.01, 0.
 
     top_1_count, top_5_count, top_10_count = 0, 0, 0
     pos_sims, neg_sims, non_gallery_sims = [], [], []
+    ranks = []
     for index, query_id in enumerate(query_ids):
         if query_id in reg_ids:
             gallery_label = np.argwhere(reg_ids == query_id)[0, 0]
@@ -325,6 +424,8 @@ def evaluation_1N(query_feats, gallery_feats, query_ids, reg_ids, fars=[0.01, 0.
             top_1_count += gallery_label in index_sorted[:1]
             top_5_count += gallery_label in index_sorted[:5]
             top_10_count += gallery_label in index_sorted[:10]
+            rank = int(np.where(index_sorted == gallery_label)[0][0]) + 1
+            ranks.append(rank)
 
             pos_sims.append(similarity[index][reg_ids == query_id][0])
             neg_sims.append(similarity[index][reg_ids != query_id])
@@ -333,20 +434,55 @@ def evaluation_1N(query_feats, gallery_feats, query_ids, reg_ids, fars=[0.01, 0.
     total_pos = len(pos_sims)
     pos_sims, neg_sims, non_gallery_sims = np.array(pos_sims), np.array(neg_sims), np.array(non_gallery_sims)
     print("pos_sims: %s, neg_sims: %s, non_gallery_sims: %s" % (pos_sims.shape, neg_sims.shape, non_gallery_sims.shape))
-    print("top1: %f, top5: %f, top10: %f" % (top_1_count / total_pos, top_5_count / total_pos, top_10_count / total_pos))
+
+    rank1 = top_1_count / total_pos
+    rank5 = top_5_count / total_pos
+    rank10 = top_10_count / total_pos
+    map_score = compute_map_from_ranks(ranks)
+    print(
+        "Rank-1: %f, Rank-5: %f, Rank-10: %f, mAP: %f"
+        % (rank1, rank5, rank10, map_score)
+    )
 
     correct_pos_cond = pos_sims > neg_sims.max(1)
-    non_gallery_sims_sorted = np.sort(non_gallery_sims.max(1))[::-1]
-    threshes, recalls = [], []
+    non_gallery_max = non_gallery_sims.max(1)
+    non_gallery_sims_sorted = np.sort(non_gallery_max)[::-1]
+    threshes, recalls, fpirs, fnirs = [], [], [], []
     for far in fars:
-        # thresh = non_gallery_sims_sorted[int(np.ceil(non_gallery_sims_sorted.shape[0] * far)) - 1]
         thresh = non_gallery_sims_sorted[max(int((non_gallery_sims_sorted.shape[0]) * far) - 1, 0)]
-        recall = np.logical_and(correct_pos_cond, pos_sims > thresh).sum() / pos_sims.shape[0]
+        tpir = np.logical_and(correct_pos_cond, pos_sims > thresh).sum() / pos_sims.shape[0]
+        fpir = float(np.mean(non_gallery_max >= thresh))
         threshes.append(thresh)
-        recalls.append(recall)
-        # print("FAR = {:.10f} TPIR = {:.10f} th = {:.10f}".format(far, recall, thresh))
+        recalls.append(tpir)
+        fpirs.append(fpir)
+        fnirs.append(1.0 - tpir)
     cmc_scores = list(zip(neg_sims, pos_sims.reshape(-1, 1))) + list(zip(non_gallery_sims, [None] * non_gallery_sims.shape[0]))
-    return top_1_count, top_5_count, top_10_count, threshes, recalls, cmc_scores
+    metrics = summarize_identification_metrics(
+        rank1=rank1,
+        rank5=rank5,
+        rank10=rank10,
+        map_score=map_score,
+        enrolled_probe_count=total_pos,
+        tpir_detail={
+            far: {
+                "tar": recalls[idx],
+                "far": fpirs[idx],
+                "frr": fnirs[idx],
+                "threshold": threshes[idx],
+            }
+            for idx, far in enumerate(fars)
+        },
+        fpir_targets=fars,
+    )
+    return (
+        top_1_count,
+        top_5_count,
+        top_10_count,
+        threshes,
+        recalls,
+        cmc_scores,
+        metrics,
+    )
 
 
 class IJB_test:
@@ -402,6 +538,7 @@ class IJB_test:
         return scores, names
 
     def run_model_test_1N(self, npoints=100):
+        check_ijb_1n_meta(self.data_path, self.subset)
         fars_cal = [10 ** ii for ii in np.arange(-4, 0, 4 / npoints)] + [1]  # plot in range [10-4, 1]
         fars_show_idx = np.arange(len(fars_cal))[:: npoints // 4]  # npoints=100, fars_show=[0.0001, 0.001, 0.01, 0.1, 1.0]
 
@@ -432,72 +569,188 @@ class IJB_test:
         print("probe_mixed_unique_subject_ids:", probe_mixed_unique_subject_ids.shape)  # (19593,)
 
         print(">>>> Gallery 1")
-        g1_top_1_count, g1_top_5_count, g1_top_10_count, g1_threshes, g1_recalls, g1_cmc_scores = evaluation_1N(
+        g1_top_1_count, g1_top_5_count, g1_top_10_count, g1_threshes, g1_recalls, g1_cmc_scores, g1_metrics = evaluation_1N(
             probe_mixed_templates_feature, g1_templates_feature, probe_mixed_unique_subject_ids, g1_unique_ids, fars_cal
         )
+        print(format_identification_table(g1_metrics, gallery_name="Gallery 1"))
         print(">>>> Gallery 2")
-        g2_top_1_count, g2_top_5_count, g2_top_10_count, g2_threshes, g2_recalls, g2_cmc_scores = evaluation_1N(
+        g2_top_1_count, g2_top_5_count, g2_top_10_count, g2_threshes, g2_recalls, g2_cmc_scores, g2_metrics = evaluation_1N(
             probe_mixed_templates_feature, g2_templates_feature, probe_mixed_unique_subject_ids, g2_unique_ids, fars_cal
         )
+        print(format_identification_table(g2_metrics, gallery_name="Gallery 2"))
         print(">>>> Mean")
         query_num = probe_mixed_templates_feature.shape[0]
         top_1 = (g1_top_1_count + g2_top_1_count) / query_num
         top_5 = (g1_top_5_count + g2_top_5_count) / query_num
         top_10 = (g1_top_10_count + g2_top_10_count) / query_num
-        print("[Mean] top1: %f, top5: %f, top10: %f" % (top_1, top_5, top_10))
+        map_score = (g1_metrics["map"] + g2_metrics["map"]) / 2.0
+        print(
+            "[Mean] Rank-1: %f, Rank-5: %f, Rank-10: %f, mAP: %f"
+            % (top_1, top_5, top_10, map_score)
+        )
 
         mean_tpirs = (np.array(g1_recalls) + np.array(g2_recalls)) / 2
-        show_result = {}
-        for id, far in enumerate(fars_cal):
-            if id in fars_show_idx:
-                show_result.setdefault("far", []).append(far)
-                show_result.setdefault("g1_tpir", []).append(g1_recalls[id])
-                show_result.setdefault("g1_thresh", []).append(g1_threshes[id])
-                show_result.setdefault("g2_tpir", []).append(g2_recalls[id])
-                show_result.setdefault("g2_thresh", []).append(g2_threshes[id])
-                show_result.setdefault("mean_tpir", []).append(mean_tpirs[id])
-        print(pd.DataFrame(show_result).set_index("far").to_markdown())
-        return fars_cal, mean_tpirs, g1_cmc_scores, g2_cmc_scores
+        mean_fnirs = 1.0 - mean_tpirs
+        show_fars = [fars_cal[i] for i in fars_show_idx]
+        show_result = {"fpir": show_fars}
+        for prefix, recalls, threshes, gallery_metrics in (
+            ("g1", g1_recalls, g1_threshes, g1_metrics),
+            ("g2", g2_recalls, g2_threshes, g2_metrics),
+        ):
+            show_result["%s_tpir" % prefix] = [recalls[i] for i in fars_show_idx]
+            show_result["%s_fnir" % prefix] = [1.0 - recalls[i] for i in fars_show_idx]
+            show_result["%s_fpir" % prefix] = [
+                gallery_metrics["tpir_at_fpir_detail"][far_label(fars_cal[i])]["far"]
+                for i in fars_show_idx
+            ]
+            show_result["%s_thresh" % prefix] = [threshes[i] for i in fars_show_idx]
+        show_result["mean_tpir"] = [mean_tpirs[i] for i in fars_show_idx]
+        show_result["mean_fnir"] = [mean_fnirs[i] for i in fars_show_idx]
+        show_result["mean_fpir"] = [
+            (
+                g1_metrics["tpir_at_fpir_detail"][far_label(fars_cal[i])]["far"]
+                + g2_metrics["tpir_at_fpir_detail"][far_label(fars_cal[i])]["far"]
+            )
+            / 2.0
+            for i in fars_show_idx
+        ]
+
+        mean_metrics = summarize_identification_metrics(
+            rank1=top_1,
+            rank5=top_5,
+            rank10=top_10,
+            map_score=map_score,
+            enrolled_probe_count=int(g1_metrics["enrolled_probe_count"]),
+            tpir_detail={
+                fars_cal[i]: {
+                    "tar": float(mean_tpirs[i]),
+                    "far": float(show_result["mean_fpir"][j]),
+                    "frr": float(mean_fnirs[i]),
+                    "threshold": float((g1_threshes[i] + g2_threshes[i]) / 2),
+                }
+                for j, i in enumerate(fars_show_idx)
+            },
+            fpir_targets=show_fars,
+        )
+        print(format_identification_table(mean_metrics, gallery_name="Mean (G1+G2)"))
+        print(pd.DataFrame(show_result).set_index("fpir").to_markdown())
+        return fars_cal, mean_tpirs, g1_cmc_scores, g2_cmc_scores, {
+            "gallery1": g1_metrics,
+            "gallery2": g2_metrics,
+            "mean": mean_metrics,
+        }
+
+
+def load_pair_label(data_path, subset):
+    backup_path = os.path.join(data_path, subset + "_backup.npz")
+    if os.path.isfile(backup_path):
+        _log_stage("Loading pair labels from cache: %s" % backup_path)
+        label = np.load(backup_path)["label"]
+        pos = int(np.sum(label == 1))
+        neg = int(np.sum(label == 0))
+        _log_stage("Pair labels ready: %d pairs (genuine=%d, impostor=%d)" % (len(label), pos, neg))
+        return label
+
+    pair_list_path = os.path.join(
+        data_path, subset, "meta", "%s_template_pair_label.txt" % subset.lower()
+    )
+    if not os.path.isfile(pair_list_path):
+        raise FileNotFoundError("Pair label file not found: %s" % pair_list_path)
+    _log_stage("Loading pair labels from meta (slow, ~1–3 min): %s" % pair_list_path)
+    _log_stage("Tip: run full eval once to create %s for faster replay" % backup_path)
+    _, _, label = read_IJB_meta_columns_to_int(pair_list_path, columns=[0, 1, 2])
+    pos = int(np.sum(label == 1))
+    neg = int(np.sum(label == 0))
+    _log_stage("Pair labels ready: %d pairs (genuine=%d, impostor=%d)" % (len(label), pos, neg))
+    return label
 
 
 def plot_roc_and_calculate_tpr(scores, names=None, label=None):
-    print(">>>> plot roc and calculate tpr...")
+    _log_stage("Verification metrics (TAR/FRR/Threshold @ FAR) — starting")
     score_dict = {}
     for id, score in enumerate(scores):
         name = None if names is None else names[id]
         if isinstance(score, str) and score.endswith(".npz"):
+            _log_stage("[1/5] Loading scores from %s ..." % score)
             aa = np.load(score)
             score = aa.get("scores", [])
             label = aa["label"] if label is None and "label" in aa else label
             score_name = aa.get("names", [])
             for ss, nn in zip(score, score_name):
-                score_dict[nn] = ss
+                score_dict[nn] = np.asarray(ss, dtype=np.float64).ravel()
+            _log_stage("[1/5] Scores loaded: %d method(s), %d pairs each (approx.)" % (
+                len(score_dict), len(next(iter(score_dict.values()))) if score_dict else 0
+            ))
         elif isinstance(score, str) and score.endswith(".npy"):
             name = name if name is not None else os.path.splitext(os.path.basename(score))[0]
-            score_dict[name] = np.load(score)
+            score_dict[name] = np.load(score).astype(np.float64).ravel()
         elif isinstance(score, str) and score.endswith(".txt"):
-            # IJB meta data like ijbb_template_pair_label.txt
             label = pd.read_csv(score, sep=" ", header=None).values[:, 2]
         else:
             name = name if name is not None else str(id)
-            score_dict[name] = score
+            score_dict[name] = np.asarray(score, dtype=np.float64).ravel()
     if label is None:
         print("Error: Label data is not provided")
-        return None, None
+        return None, None, None
 
+    label = np.asarray(label, dtype=np.int8)
+    if len(label) != len(next(iter(score_dict.values()))):
+        raise ValueError(
+            "Label count (%d) != score count (%d)" % (len(label), len(next(iter(score_dict.values()))))
+        )
+
+    pos_count = int(np.sum(label == 1))
+    neg_count = int(np.sum(label == 0))
+    _log_stage("[2/5] Labels aligned: %d pairs (genuine=%d, impostor=%d)" % (len(label), pos_count, neg_count))
+
+    verification_reports = {}
+    fpr_dict, tpr_dict, roc_auc_dict = {}, {}, {}
     x_labels = [10 ** (-ii) for ii in range(1, 7)[::-1]]
-    fpr_dict, tpr_dict, roc_auc_dict, tpr_result = {}, {}, {}, {}
-    for name, score in score_dict.items():
-        fpr, tpr, _ = roc_curve(label, score)
+    tpr_result = {}
+
+    for step_idx, (name, score) in enumerate(score_dict.items(), start=3):
+        _log_stage("[%d/5] Computing ROC on %d pairs for %s (typically 1–3 min) ..." % (
+            step_idx, len(score), name
+        ))
+        fpr, tpr, thresholds = roc_curve(label, score)
         roc_auc = auc(fpr, tpr)
-        fpr, tpr = np.flipud(fpr), np.flipud(tpr)  # select largest tpr at same fpr
-        tpr_result[name] = [tpr[np.argmin(abs(fpr - ii))] for ii in x_labels]
         fpr_dict[name], tpr_dict[name], roc_auc_dict[name] = fpr, tpr, roc_auc
+        _log_stage("[%d/5] ROC done: %d curve points, AUC=%.6f — deriving TAR/FRR/EER ..." % (
+            step_idx, len(fpr), roc_auc
+        ))
+
+        positives = score[label == 1]
+        negatives = score[label == 0]
+        verification_reports[name] = summarize_verification_metrics_from_roc(
+            fpr,
+            tpr,
+            thresholds,
+            pos_count,
+            neg_count,
+            far_targets=FAR_TARGETS_11_DISPLAY,
+            auc=roc_auc,
+            positive_scores=positives,
+            negative_scores=negatives,
+        )
+        print(format_verification_table(verification_reports[name], method_name=name))
+
+        fpr_flip, tpr_flip = np.flipud(fpr), np.flipud(tpr)
+        tpr_result[name] = [float(tpr_flip[np.argmin(np.abs(fpr_flip - ii))]) for ii in x_labels]
+
+    _log_stage("[5/5] Building summary tables ...")
     tpr_result_df = pd.DataFrame(tpr_result, index=x_labels).T
-    tpr_result_df['AUC'] = pd.Series(roc_auc_dict)
+    tpr_result_df["AUC"] = pd.Series(roc_auc_dict)
     tpr_result_df.columns.name = "Methods"
-    print(tpr_result_df.to_markdown())
-    # print(tpr_result_df)
+    for name, report in verification_reports.items():
+        tpr_result_df.loc[name, "EER"] = report.get("eer")
+        for far_key, tar in report.get("frr_at_far", {}).items():
+            tpr_result_df.loc[name, "FRR@%s" % far_key] = tar
+        for far_key, thresh in report.get("threshold_at_far", {}).items():
+            tpr_result_df.loc[name, "Th@%s" % far_key] = thresh
+    try:
+        print("\nLegacy TAR@FAR summary:\n" + tpr_result_df.to_markdown())
+    except ImportError:
+        print("\nLegacy TAR@FAR summary:\n" + tpr_result_df.to_string())
 
     try:
         import matplotlib.pyplot as plt
@@ -524,7 +777,28 @@ def plot_roc_and_calculate_tpr(scores, names=None, label=None):
         print("matplotlib plot failed")
         fig = None
 
-    return tpr_result_df, fig
+    _log_stage("Verification metrics complete.")
+    return tpr_result_df, fig, verification_reports
+
+
+def _json_safe(obj):
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, (np.floating, np.integer)):
+        return obj.item()
+    if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+        return None
+    return obj
+
+
+def save_metrics_json(metrics_payload, save_result_path):
+    json_path = os.path.splitext(save_result_path)[0] + ".metrics.json"
+    with open(json_path, "w", encoding="utf-8") as ff:
+        json.dump(_json_safe(metrics_payload), ff, indent=2, ensure_ascii=False)
+    print(">>>> Saved production metrics JSON:", json_path)
+    return json_path
 
 
 def plot_dir_far_cmc_scores(scores, names=None):
@@ -614,7 +888,27 @@ if __name__ == "__main__":
         if args.is_one_2_N:
             plot_dir_far_cmc_scores(args.plot_only)
         else:
-            plot_roc_and_calculate_tpr(args.plot_only)
+            label = None
+            pair_label_path = os.path.join(
+                args.data_path, args.subset, "meta",
+                "%s_template_pair_label.txt" % args.subset.lower(),
+            )
+            backup_path = os.path.join(args.data_path, args.subset + "_backup.npz")
+            if os.path.isfile(backup_path) or os.path.isfile(pair_label_path):
+                label = load_pair_label(args.data_path, args.subset)
+            _, _, verification_reports = plot_roc_and_calculate_tpr(args.plot_only, label=label)
+            if verification_reports:
+                metrics_payload = {
+                    "subset": args.subset,
+                    "protocol": "N0D1F1",
+                    "task": "1:1",
+                    "plot_only": True,
+                    "verification": verification_reports,
+                }
+                for plot_file in args.plot_only:
+                    if plot_file.endswith(".npz"):
+                        save_metrics_json(metrics_payload, plot_file)
+                        break
     else:
         save_name = os.path.splitext(os.path.basename(args.save_result))[0]
         save_items = {}
@@ -626,30 +920,43 @@ if __name__ == "__main__":
         if args.save_embeddings:  # Save embeddings first, in case of any error happens later...
             np.savez(args.save_result, embs=tt.embs, embs_f=tt.embs_f)
 
+        metrics_payload = {
+            "subset": args.subset,
+            "protocol": "N0D1F1",
+            "result_file": args.save_result,
+        }
+
         if args.is_one_2_N:  # 1:N test
-            fars, tpirs, _, _ = tt.run_model_test_1N()
+            fars, tpirs, _, _, id_metrics = tt.run_model_test_1N()
             scores = [(fars, tpirs)]
             names = [save_name]
             save_items.update({"scores": scores, "names": names})
+            metrics_payload.update({"task": "1:N", "identification": id_metrics})
         elif args.is_bunch:  # All 8 tests N{0,1}D{0,1}F{0,1}
             scores, names = tt.run_model_test_bunch()
             names = [save_name + "_" + ii for ii in names]
             label = tt.label
             save_items.update({"scores": scores, "names": names})
+            metrics_payload.update({"task": "1:1_bunch"})
         else:  # Basic 1:1 N0D1F1 test
             score = tt.run_model_test_single()
             scores, names, label = [score], [save_name], tt.label
             save_items.update({"scores": scores, "names": names})
+            metrics_payload.update({"task": "1:1"})
 
         if args.save_embeddings:
             save_items.update({"embs": tt.embs, "embs_f": tt.embs_f})
         if args.save_label:
             save_items.update({"label": label})
 
-        if args.model_file != None or args.save_embeddings:  # embeddings not restored from file or should save_embeddings again
+        if args.model_file != None or args.save_embeddings:
             np.savez(args.save_result, **save_items)
 
         if args.is_one_2_N:
             plot_dir_far_cmc_scores(scores=scores, names=names)
+            save_metrics_json(metrics_payload, args.save_result)
         else:
-            plot_roc_and_calculate_tpr(scores, names=names, label=label)
+            _, _, verification_reports = plot_roc_and_calculate_tpr(scores, names=names, label=label)
+            if verification_reports:
+                metrics_payload["verification"] = verification_reports
+            save_metrics_json(metrics_payload, args.save_result)

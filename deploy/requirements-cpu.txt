@@ -1,0 +1,3 @@
+# CPU-only inference stack
+-r requirements.txt
+onnxruntime>=1.19.0

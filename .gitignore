@@ -101,3 +101,12 @@ ENV/
 .mypy_cache/
 
 .DS_Store
+
+deploy/models/antispoof
+gallery.db
+IJB_result/
+recognition/_evaluation_/enroll_experiment_megaface/results/buffalo_l/
+deploy_test/results
+enroll_images/
+enroll_add/
+probe_images/

@@ -1,0 +1,7 @@
+# GPU inference stack for CUDA 12 (matches nvidia/cuda:12.4.x base image).
+# onnxruntime-gpu>=1.27 defaults to CUDA 13 on PyPI — keep <1.27 for this image.
+-r requirements.txt
+onnxruntime-gpu>=1.19.0,<1.27.0
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+nvidia-cuda-runtime-cu12

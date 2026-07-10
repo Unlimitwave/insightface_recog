@@ -1,0 +1,57 @@
+# Base compose (dev): bind-mount app for hot reload.
+# Prefer: ./scripts/compose_up.sh  (auto GPU/CPU)
+# Manual:
+#   RUNTIME=gpu docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+
+services:
+  face-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        RUNTIME: ${RUNTIME:-gpu}
+    image: facerecog-access-control:${RUNTIME:-gpu}
+    container_name: face-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DEVICE=${DEVICE:-auto}
+      - INSIGHTFACE_ROOT=/models/insightface
+      - FACE_MODEL_PACK=buffalo_l
+      - ANTISPOOF_MODEL_DIR=/models/antispoof
+      - DATA_DIR=/data
+      - IDENTIFY_THRESHOLD=0.42
+      - LIVENESS_ENABLED=true
+      - LIVENESS_ON_ENROLL=true
+      - LIVENESS_ON_IDENTIFY=true
+      - LIVENESS_THRESHOLD=0.5
+      # - API_KEY=change-me-in-production
+    volumes:
+      # Hot-reload: edit host ./app, uvicorn --reload picks up changes
+      - ./app:/app/app
+      # Host InsightFace models (buffalo_l)
+      - ${INSIGHTFACE_HOST_MODELS:-~/.insightface}:/models/insightface:ro
+      # Liveness ONNX models (run scripts/download_models.sh first)
+      - ./models/antispoof:/models/antispoof:ro
+      # Persistent gallery database + FAISS index
+      - face-gallery-data:/data
+    # Dev server with file watching (drop --reload for production images)
+    command:
+      [
+        "python3",
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/app",
+      ]
+    restart: unless-stopped
+
+volumes:
+  face-gallery-data:
