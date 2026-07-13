@@ -6,8 +6,9 @@ services:
     build:
       args:
         RUNTIME: gpu
-        BASE_IMAGE: nvidia/cuda:12.4.1-runtime-ubuntu22.04
+        BASE_IMAGE: nvidia/cuda:12.4.1-runtime-ubuntu24.04
     image: facerecog-access-control:gpu
+    container_name: face-api-gpu
     environment:
       - DEVICE=${DEVICE:-auto}
     gpus: all

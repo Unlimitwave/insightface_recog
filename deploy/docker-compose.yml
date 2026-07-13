@@ -12,7 +12,6 @@ services:
       args:
         RUNTIME: ${RUNTIME:-gpu}
     image: facerecog-access-control:${RUNTIME:-gpu}
-    container_name: face-api
     ports:
       - "8000:8000"
     environment:

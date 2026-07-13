@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 #
 # Build-time runtime selection (host GPU is not visible during `docker build`):
-#   docker build --build-arg RUNTIME=gpu --build-arg BASE_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 .
-#   docker build --build-arg RUNTIME=cpu --build-arg BASE_IMAGE=ubuntu:22.04 .
+#   docker build --build-arg RUNTIME=gpu --build-arg BASE_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu24.04 .
+#   docker build --build-arg RUNTIME=cpu --build-arg BASE_IMAGE=ubuntu:24.04 .
 # Prefer: ./scripts/compose_up.sh  (auto-detects host GPU + nvidia-container-toolkit)
 
-ARG BASE_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04
+ARG BASE_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu24.04
 FROM ${BASE_IMAGE}
 
 ARG RUNTIME=gpu
@@ -20,9 +20,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/app/.venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-dev python3.12-venv \
     libgl1 libglib2.0-0 libsm6 libxext6 libgomp1 curl \
     && rm -rf /var/lib/apt/lists/*

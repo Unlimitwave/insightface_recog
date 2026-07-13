@@ -33,7 +33,7 @@ detect_runtime() {
   fi
 
   # Fallback probe: one-shot GPU container
-  if docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
+  if docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu24.04 nvidia-smi >/dev/null 2>&1; then
     echo "gpu"
     return
   fi

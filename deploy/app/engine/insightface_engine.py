@@ -77,7 +77,7 @@ class InsightFaceEngine(FaceEngine):
         self._embedding_dim = 512
 
         logger.info(
-            "InsightFaceEngine ready: pack=%s device=%s providers=%s liveness=%s",
+            "FaceEngine ready: pack=%s device=%s providers=%s liveness=%s",
             settings.model_pack,
             self._device_label,
             self.providers,
