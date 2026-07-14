@@ -10,9 +10,9 @@
   5. 清理测试数据
 
 用法:
-  pip install -r deploy_test/requirements.txt
-  ./deploy_test/run_feature_test.sh
-  SKIP_LIVENESS=true ./deploy_test/run_feature_test.sh   # 样例图可能过不了活体时推荐
+  pip install -r test/requirements.txt
+  ./test/scripts/run_feature_test.sh
+  SKIP_LIVENESS=true ./test/scripts/run_feature_test.sh   # 样例图可能过不了活体时推荐
 """
 
 from __future__ import annotations
@@ -75,14 +75,15 @@ class FeatureTestReport:
     notes: list[str] = field(default_factory=list)
 
 
-def parse_args() -> argparse.Namespace:
-    script_dir = Path(__file__).resolve().parent
+TEST_ROOT = Path(__file__).resolve().parent.parent
 
+
+def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="人脸 API 功能冒烟测试（多人全量底库）")
-    p.add_argument("--base-url", default="http://localhost:8000")
+    p.add_argument("--base-url", default="http://localhost:8123")
     p.add_argument("--api-key", default=None)
-    p.add_argument("--enroll-root", type=Path, default=script_dir / "enroll_images")
-    p.add_argument("--enroll-add-root", type=Path, default=script_dir / "enroll_add")
+    p.add_argument("--enroll-root", type=Path, default=TEST_ROOT / "enroll_images")
+    p.add_argument("--enroll-add-root", type=Path, default=TEST_ROOT / "enroll_add")
     p.add_argument(
         "--stranger-dir",
         type=str,

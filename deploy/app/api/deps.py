@@ -61,6 +61,17 @@ async def verify_api_key(
         )
 
 
+def resolve_skip_liveness(settings: Settings, skip_liveness: bool) -> bool:
+    """Reject skip_liveness in production; allowed in development only."""
+    if skip_liveness and not settings.allow_skip_liveness:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST,
+            "skip_liveness is disabled in production",
+            status_code=403,
+        )
+    return skip_liveness
+
+
 async def get_request_id(
     request: Request,
     x_request_id: Annotated[str | None, Header(alias="X-Request-ID")] = None,

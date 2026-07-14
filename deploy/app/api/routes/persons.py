@@ -7,7 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from ...schemas.api import EnrollResponse, PersonCreateRequest, PersonListResponse, PersonResponse
-from ..deps import get_face_service, get_request_id, verify_api_key
+from ..deps import get_face_service, get_request_id, get_settings, resolve_skip_liveness, verify_api_key
+from ...config import Settings
 from ...services.face_service import FaceService
 
 # 创建路由模块：所有路径自动加上 /persons 前缀，
@@ -56,11 +57,12 @@ def delete_person(
 async def enroll_faces(
     person_id: str,
     service: Annotated[FaceService, Depends(get_face_service)],
+    settings: Annotated[Settings, Depends(get_settings)],
     request_id: Annotated[str, Depends(get_request_id)],  # 自动注入请求 ID，用于日志追踪
     images: list[UploadFile] = File(..., description="One or more face photos (JPEG/PNG)"),
     skip_liveness: bool = Query(
         False,
-        description="Skip liveness on enrollment (admin/trusted source only)",
+        description="Skip liveness on enrollment (development only; forbidden in production)",
     ),
 ) -> EnrollResponse:
     """为人脸录入人脸照片。POST /v1/persons/{person_id}/faces
@@ -73,7 +75,12 @@ async def enroll_faces(
     """
     # 将 FastAPI 的 UploadFile 对象转为 (文件名, 文件流) 元组列表
     files = [(f.filename or "upload", f.file) for f in images]
-    return service.enroll_faces(person_id, files, request_id, skip_liveness=skip_liveness)
+    return service.enroll_faces(
+        person_id,
+        files,
+        request_id,
+        skip_liveness=resolve_skip_liveness(settings, skip_liveness),
+    )
 
 
 @router.delete("/{person_id}/faces/{face_id}", status_code=204)

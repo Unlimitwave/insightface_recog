@@ -102,11 +102,16 @@ ENV/
 
 .DS_Store
 
-deploy/models/antispoof
+# deploy/models: ignore model weights, keep subfolder structure via .gitkeep
+deploy/models/**
+!deploy/models/**/
+!deploy/models/**/.gitkeep
 gallery.db
 IJB_result/
 recognition/_evaluation_/enroll_experiment_megaface/results/buffalo_l/
-deploy_test/results
+test/results
+test/.venv
 enroll_images/
 enroll_add/
 probe_images/
+.vscode/

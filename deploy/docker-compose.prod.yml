@@ -1,0 +1,20 @@
+# Production overlay: app baked into image, no reload, strict liveness.
+# Usage: COMPOSE_MODE=prod ./scripts/compose_up.sh
+#
+# Ensure .env sets API_KEY and ENVIRONMENT=production (overlay enforces the latter).
+
+services:
+  face-api:
+    environment:
+      ENVIRONMENT: production
+    command:
+      [
+        "python3",
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "${PORT:-8123}",
+      ]

@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "/home/cmsr/桌面/东风/insightface_recog/cpp-package/inspireface"
+    "cmake.sourceDirectory": "/Users/caoyintao/Desktop/暂时项目研发/insightface_recog/cpp-package/inspireface",
+    "python-envs.defaultEnvManager": "ms-python.python:pyenv"
 }
