@@ -5,26 +5,25 @@
 #   docker build --build-arg RUNTIME=cpu --build-arg BASE_IMAGE=ubuntu:24.04 .
 # Prefer: ./scripts/compose_up.sh  (auto-detects host GPU + nvidia-container-toolkit)
 
+# TARGETPLATFORM is injected by BuildKit / compose `build.platform` (linux/arm64 or linux/amd64).
+ARG TARGETPLATFORM=linux/amd64
 ARG BASE_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu24.04
-FROM ${BASE_IMAGE}
+FROM --platform=$TARGETPLATFORM ${BASE_IMAGE}
 
 ARG RUNTIME=gpu
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     RUNTIME=${RUNTIME} \
-    INSIGHTFACE_ROOT=/models/insightface \
-    DATA_DIR=/data \
-    ANTISPOOF_MODEL_DIR=/models/antispoof \
-    VIRTUAL_ENV=/app/.venv \
-    PATH="/app/.venv/bin:$PATH"
+    VIRTUAL_ENV=/service/.venv \
+    PATH="/service/.venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-dev python3.12-venv \
-    libgl1 libglib2.0-0 libsm6 libxext6 libgomp1 curl \
+    libgl1 libglib2.0-0 libsm6 libxext6 libgomp1 curl tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /service
 
 COPY requirements.txt requirements-gpu.txt requirements-cpu.txt ./
 
@@ -43,15 +42,16 @@ RUN python3.12 -m venv "${VIRTUAL_ENV}" && \
       pip install -r requirements-cpu.txt -i https://pypi.tuna.tsinghua.edu.cn/simple; \
     fi
 
-# Entrypoint only — app code is bind-mounted via compose for hot reload
-COPY scripts/docker-entrypoint.sh scripts/nvidia_lib_path.sh /app/scripts/
-RUN chmod +x /app/scripts/docker-entrypoint.sh && \
-    mkdir -p /models/insightface /models/antispoof /data
+# App code is copied for production; dev compose bind-mounts over /service/app.
+COPY app/ /service/app/
+COPY scripts/docker-entrypoint.sh scripts/nvidia_lib_path.sh /service/scripts/
+RUN chmod +x /service/scripts/docker-entrypoint.sh && \
+    mkdir -p /service/models/detection /service/models/recog /service/models/antispoof /service/data
 
-EXPOSE 8000
+EXPOSE 8123
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -sf http://127.0.0.1:8000/v1/health || exit 1
+    CMD curl -sf http://127.0.0.1:8123/v1/health || exit 1
 
-ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
-CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/service/scripts/docker-entrypoint.sh"]
+CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8123"]

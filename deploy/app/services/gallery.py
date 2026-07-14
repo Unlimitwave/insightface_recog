@@ -411,4 +411,6 @@ class GalleryStore:
             if prev is None or hit.similarity > prev.similarity:
                 best_by_person[hit.person_id] = hit
 
-        return sorted(best_by_person.values(), key=lambda h: h.similarity, reverse=True)[:top_k]
+        candidates = list(best_by_person.values())
+        candidates.sort(key=lambda h: h.similarity, reverse=True)
+        return candidates[:top_k]

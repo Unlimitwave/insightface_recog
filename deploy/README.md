@@ -24,38 +24,97 @@
 └───────────────────────────────────────────────┘
 ```
 
+
+
 ## 快速启动
+
+
 
 ### 1. 准备模型
 
-**识别模型**（已有可跳过）：
+所有模型统一放在 `deploy/models/` 下，便于管理与 Docker 挂载：
 
-```bash
-# buffalo_l 通常在 ~/.insightface/models/buffalo_l/
-python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l').prepare(ctx_id=0)"
-```
 
-**活体模型**（必下，用于注册/识别防照片攻击）：
+| 目录                  | 用途                | 默认文件                                           |
+| ------------------- | ----------------- | ---------------------------------------------- |
+| `models/detection/` | 人脸检测 (SCRFD)      | `det_10g.onnx`                                 |
+| `models/recog/`     | 人脸特征 (ArcFace)    | `glint360k_r100.onnx`（默认；亦可放 `w600k_r50.onnx`） |
+| `models/antispoof/` | 被动活体 (MiniFASNet) | `MiniFASNetV1SE.onnx`, `MiniFASNetV2.onnx`     |
+
+
+一键下载（推荐）：
 
 ```bash
 chmod +x scripts/download_models.sh
 ./scripts/download_models.sh
-# 输出: deploy/models/antispoof/MiniFASNetV*.onnx
 ```
+
+若已有 `~/.insightface/models/buffalo_l/`，可手动复制：
+
+```bash
+mkdir -p models/detection models/recog
+cp ~/.insightface/models/buffalo_l/det_10g.onnx models/detection/
+cp ~/.insightface/models/buffalo_l/w600k_r50.onnx models/recog/
+```
+
+
 
 ### 2. Docker 启动（推荐：自动 GPU / CPU）
 
-`docker build` **无法可靠探测宿主机 GPU**，因此依赖选择在 compose 启动时完成（标准做法）：
+`docker build` **无法可靠探测宿主机 GPU**，因此依赖选择在 compose 启动时完成（标准做法）。
+
+**开发模式（默认）**：bind-mount `app/` + uvicorn `--reload` 热更新。
+
+**生产模式**：应用代码打入镜像、无 reload、`ENVIRONMENT=production`（禁止 `skip_liveness`）。
+
+```bash
+cd deploy
+cp .env.example .env
+./scripts/compose_up.sh                    # 开发模式（COMPOSE_MODE=dev）
+COMPOSE_MODE=prod ./scripts/compose_up.sh  # 生产模式
+
+
+
+
+# 如果上面速度很慢，先拉取镜像例如是只有cpu x86架构
+docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/docker/dockerfile:1
+docker tag  swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/docker/dockerfile:1  docker.io/docker/dockerfile:1
+
+docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04
+docker tag  swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04  docker.io/ubuntu:24.04
+
+# 1. 切到本机 Docker 引擎 builder
+docker buildx use default
+# 确认当前是 default（有 *）
+docker buildx ls
+# 2. 确保前端镜像本机仍有
+docker images | grep dockerfile
+# 3. 再构建
+COMPOSE_MODE=prod ./scripts/compose_up.sh
+```
+
+
+
+
+
+
+
+
+
+
 
 
 | 文件                                    | 作用                                                     |
 | ------------------------------------- | ------------------------------------------------------ |
+| `docker-compose.yml`                  | 公共基础（`env_file: .env`、模型与数据卷）                          |
+| `docker-compose.dev.yml`              | 开发覆盖：挂载 `app/`、`--reload`                              |
+| `docker-compose.prod.yml`             | 生产覆盖：镜像内代码、无 reload、`ENVIRONMENT=production`           |
 | `requirements.txt`                    | 公共依赖（不含 onnxruntime）                                   |
 | `requirements-gpu.txt`                | `onnxruntime-gpu` + CUDA pip 库                         |
 | `requirements-cpu.txt`                | `onnxruntime`（CPU）                                     |
 | `Dockerfile`                          | `ARG RUNTIME` + `ARG BASE_IMAGE`：选依赖与基础镜像              |
 | `docker-compose.gpu.yml` / `.cpu.yml` | GPU 透传 / CPU 覆盖                                        |
-| `scripts/compose_up.sh`               | 探测 `nvidia-smi` + nvidia-container-toolkit，自动选 GPU/CPU |
+| `scripts/compose_up.sh`               | 探测 GPU/CPU + `COMPOSE_MODE`（dev/prod），自动选 compose 叠加文件 |
 
 
 ```bash
@@ -64,17 +123,37 @@ cp .env.example .env
 ./scripts/compose_up.sh
 ```
 
-开发模式：`./app` 挂载进容器，uvicorn `--reload` 热更新；**不要**在 Dockerfile 里 `COPY app`。
+`compose_up.sh` 会按宿主机自动选择 `linux/arm64` 或 `linux/amd64`，并用 BuildKit 构建**原生架构**镜像（建议不要用 `DOCKER_BUILDKIT=0`，否则会误构建 amd64 并通过 Rosetta 模拟，慢且易出问题）。
 
-### 3. 手动指定 GPU / CPU
+Compose 通过 `env_file: .env` 加载全部配置；路径统一用相对路径 `./models/...`、`./data`（容器内 `WORKDIR=/service`，挂载 `./models` → `/service/models`、`./data` → `/service/data`）。修改 `.env` 后需 `docker compose ... up -d` 重建容器使环境变量生效。
+
+开发模式：`./app` 挂载到 `/service/app`（覆盖镜像内代码），uvicorn `--reload` 热更新。生产模式：`COMPOSE_MODE=prod ./scripts/compose_up.sh`（代码在镜像内、禁止 `skip_liveness`）。
+
+若仍看到 `platform (linux/amd64) does not match ... arm64` 警告，说明本地有旧的 x86 镜像缓存，请无缓存重建：
 
 ```bash
-# GPU 镜像 + GPU 透传
-DOCKER_BUILDKIT=0 RUNTIME=gpu docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-
-# 纯 CPU
-DOCKER_BUILDKIT=0 docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+docker compose down
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.cpu.yml build --no-cache
+DOCKER_PLATFORM=linux/arm64 ./scripts/compose_up.sh   #arm架构 系列（一般可省略，脚本会自动检测）
+# Linux x86 服务器无需指定，脚本会自动用 linux/amd64
 ```
+
+
+
+### 3. 手动指定 GPU / CPU / 模式
+
+```bash
+# GPU 镜像 + GPU 透传（Linux x86 + NVIDIA）
+RUNTIME=gpu docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.gpu.yml up -d --build
+
+# 纯 CPU（Mac / 无 GPU 环境）
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.cpu.yml up -d --build
+
+# 生产（无 reload，代码在镜像内）
+COMPOSE_MODE=prod ./scripts/compose_up.sh
+```
+
+
 
 ### 4. 宿主机有 GPU 但 health 显示 `device: cpu`
 
@@ -102,46 +181,57 @@ docker compose down
 docker exec face-api python3 -c "import onnxruntime as ort; print(ort.get_available_providers())"
 # GPU 镜像应包含 CUDAExecutionProvider
 
-curl -s http://localhost:8000/v1/health | python3 -m json.tool
+curl -s http://localhost:8123/v1/health | python3 -m json.tool
 # "device": "cuda:0" 或 "cpu"
 ```
+
+服务挂了 / 想手动重启进程  `docker compose restart` 可以 
 
 ### 5. 验证
 
 ```bash
-curl -s http://localhost:8000/v1/health | python3 -m json.tool
-curl -s http://localhost:8000/v1/ready | python3 -m json.tool
-open http://localhost:8000/docs   # Swagger UI
+curl -s http://localhost:8123/v1/health | python3 -m json.tool
+curl -s http://localhost:8123/v1/ready | python3 -m json.tool
+open http://localhost:8123/docs   # Swagger UI
 ```
+
+
 
 ## API 说明
 
+**详细接口文档**：[docs/API.md](docs/API.md)（请求/响应字段、错误码、curl 示例、业务语义）
 
-| 方法     | 路径                       | 说明                        |
-| ------ | ------------------------ | ------------------------- |
-| GET    | `/v1/health`             | 存活探针                      |
-| GET    | `/v1/ready`              | 就绪探针（含活体模型检查）             |
-| POST   | `/v1/persons`            | 创建人员                      |
-| GET    | `/v1/persons`            | 列表                        |
-| GET    | `/v1/persons/{id}`       | 详情                        |
-| DELETE | `/v1/persons/{id}`       | 删除人员及所有人脸                 |
-| POST   | `/v1/persons/{id}/faces` | 注册人脸（multipart，建议 3~5 张）  |
-| POST   | `/v1/identify`           | **1:N 识别**（探针图 multipart） |
-| POST   | `/v1/verify`             | **1:1 验证**（探针 vs 指定 `person_id`） |
-| GET    | `/v1/stats`              | 底库规模 + 事件统计（日趋势、通过率、活跃度） |
-| GET    | `/v1/events`             | 识别/验证事件审计（支持分页与筛选）       |
+服务默认监听 **8123** 端口（可通过环境变量 `PORT` 修改）。交互式 OpenAPI：`http://localhost:8123/docs`
+
+
+| 方法     | 路径                                 | 说明                               |
+| ------ | ---------------------------------- | -------------------------------- |
+| GET    | `/v1/health`                       | 存活探针                             |
+| GET    | `/v1/ready`                        | 就绪探针（含活体模型检查）                    |
+| POST   | `/v1/persons`                      | 创建人员                             |
+| GET    | `/v1/persons`                      | 列表                               |
+| GET    | `/v1/persons/{id}`                 | 详情                               |
+| DELETE | `/v1/persons/{id}`                 | 删除人员及所有人脸                        |
+| POST   | `/v1/persons/{id}/faces`           | 注册人脸（multipart，建议 3~5 张）         |
+| DELETE | `/v1/persons/{id}/faces/{face_id}` | 删除单张人脸模板                         |
+| POST   | `/v1/identify`                     | **1:N 识别**（探针图 multipart）        |
+| POST   | `/v1/verify`                       | **1:1 验证**（探针 vs 指定 `person_id`） |
+| GET    | `/v1/stats`                        | 底库规模 + 事件统计（日趋势、通过率、活跃度）         |
+| GET    | `/v1/events`                       | 识别/验证事件审计（支持分页与筛选）               |
+
+
 
 
 ### 注册流程（门禁底库）
 
 ```bash
 # 1. 创建人员
-curl -X POST http://localhost:8000/v1/persons \
+curl -X POST http://localhost:8123/v1/persons \
   -H "Content-Type: application/json" \
   -d '{"person_id":"emp001","display_name":"张三","metadata":{"dept":"研发"}}'
 
 # 2. 注册人脸（可多次上传，最多 MAX_FACES_PER_PERSON 张）
-curl -X POST "http://localhost:8000/v1/persons/emp001/faces" \
+curl -X POST "http://localhost:8123/v1/persons/emp001/faces" \
   -F "images=@photo1.jpg" \
   -F "images=@photo2.jpg" \
   -F "images=@photo3.jpg"
@@ -149,17 +239,21 @@ curl -X POST "http://localhost:8000/v1/persons/emp001/faces" \
 
 **重复注册说明**（同一人再次 POST `…/faces`）：
 
-| 场景 | 行为 |
-| ---- | ---- |
-| 人员已存在，再次上传照片 | **累加**新人脸模板，不覆盖旧模板；1:N 检索时取同人最高相似度 |
-| 超过 `MAX_FACES_PER_PERSON`（默认 5） | 返回 `ENROLLMENT_LIMIT`，含 `current` / `requested` / `max` |
-| 重复 POST `/v1/persons` 创建同 `person_id` | 返回 400 `person_id already exists` |
-| 人员不存在就注册人脸 | 返回 404 `PERSON_NOT_FOUND` |
+
+| 场景                                    | 行为                                                      |
+| ------------------------------------- | ------------------------------------------------------- |
+| 人员已存在，再次上传照片                          | **累加**新人脸模板，不覆盖旧模板；1:N 检索时取同人最高相似度                      |
+| 超过 `MAX_FACES_PER_PERSON`（默认 5）       | 返回 `ENROLLMENT_LIMIT`，含 `current` / `requested` / `max` |
+| 重复 POST `/v1/persons` 创建同 `person_id` | 返回 400 `person_id already exists`                       |
+| 人员不存在就注册人脸                            | 返回 404 `PERSON_NOT_FOUND`                               |
+
+
+
 
 ### 识别流程（闸机探针）
 
 ```bash
-curl -X POST "http://localhost:8000/v1/identify" \
+curl -X POST "http://localhost:8123/v1/identify" \
   -F "image=@probe.jpg"
 ```
 
@@ -187,12 +281,14 @@ curl -X POST "http://localhost:8000/v1/identify" \
 - `is_stranger=true`：检测到人脸，但底库无超过阈值的匹配（陌生人）
 - `alert=true`：在 `STRANGER_ALERT_ENABLED=true` 且为陌生人时为 true，供业务侧触发闯入告警
 
+
+
 ### 1:1 验证流程（闸机先验身份）
 
 适用于刷卡/扫码后已知 `person_id`、需确认「来人是否为该身份」的场景：
 
 ```bash
-curl -X POST "http://localhost:8000/v1/verify?person_id=emp001" \
+curl -X POST "http://localhost:8123/v1/verify?person_id=emp001" \
   -F "image=@probe.jpg"
 ```
 
@@ -213,41 +309,59 @@ curl -X POST "http://localhost:8000/v1/verify?person_id=emp001" \
 }
 ```
 
+
+
 ### 统计与审计
 
 ```bash
 # 近 7 日识别量、通过率、日趋势、人员活跃度
-curl -s "http://localhost:8000/v1/stats?days=7" | python3 -m json.tool
+curl -s "http://localhost:8123/v1/stats?days=7" | python3 -m json.tool
 
 # 事件历史（分页）
-curl -s "http://localhost:8000/v1/events?limit=20" | python3 -m json.tool
+curl -s "http://localhost:8123/v1/events?limit=20" | python3 -m json.tool
 
 # 仅陌生人（闯入告警）事件
-curl -s "http://localhost:8000/v1/events?is_stranger=true" | python3 -m json.tool
+curl -s "http://localhost:8123/v1/events?is_stranger=true" | python3 -m json.tool
 
 # 按人员筛选
-curl -s "http://localhost:8000/v1/events?person_id=emp001&event_type=identify" | python3 -m json.tool
+curl -s "http://localhost:8123/v1/events?person_id=emp001&event_type=identify" | python3 -m json.tool
 ```
 
-事件持久化在 `DATA_DIR/events.db`（默认容器内 `/data/events.db`），与底库 `gallery.db` 同卷。
+事件持久化在 `DATA_DIR`（默认 `./data`，即宿主机 `deploy/data/`），与底库 `gallery.db` 同目录。
 
 ## 生产配置
 
-复制 `.env.example` 为 `.env`，重点项：
+复制 `.env.example` 为 `.env`，生产部署建议：
+
+```bash
+COMPOSE_MODE=prod ./scripts/compose_up.sh
+```
+
+并在 `.env` 中设置 `API_KEY`（`docker-compose.prod.yml` 会将 `ENVIRONMENT` 设为 `production`）。
+
+重点环境变量：
 
 
-| 变量                     | 默认     | 说明                      |
-| ---------------------- | ------ | ----------------------- |
-| `DEVICE`               | `auto` | `auto`/`cuda`/`cpu`     |
-| `IDENTIFY_THRESHOLD`   | `0.42` | 1:N 相似度阈值，**须在私有数据上标定** |
-| `VERIFY_THRESHOLD`     | `0.42` | 1:1 验证阈值，可与 1:N 分开标定   |
-| `STRANGER_ALERT_ENABLED` | `true` | 识别响应中启用 `alert` 字段（陌生人告警） |
-| `EVENT_LOG_ENABLED`    | `true` | 识别/验证事件持久化             |
-| `EVENT_LOG_RETENTION_DAYS` | `90` | 事件保留天数，启动时自动清理过期记录   |
-| `LIVENESS_ENABLED`     | `true` | 启用被动活体                  |
-| `LIVENESS_ON_IDENTIFY` | `true` | 识别时强制活体（门禁推荐）           |
-| `LIVENESS_ON_VERIFY`   | `true` | 1:1 验证时强制活体             |
-| `API_KEY`              | 空      | 设置后要求请求头 `X-API-Key`    |
+| 变量                         | 默认                    | 说明                                                  |
+| -------------------------- | --------------------- | --------------------------------------------------- |
+| `ENVIRONMENT`              | `development`         | `production` 时禁止 `skip_liveness`（prod compose 自动设置） |
+| `COMPOSE_MODE`             | `dev`（脚本默认）           | `dev` 热更新 / `prod` 镜像部署                             |
+| `PORT`                     | `8123`                | HTTP 监听端口（Docker 映射同步）                              |
+| `DEVICE`                   | `auto`                | `auto`/`cuda`/`cpu`                                 |
+| `DET_MODEL_DIR` 等          | `./models/...`        | 相对路径；Docker 挂载至 `/service/models/...`               |
+| `DATA_DIR`                 | `./data`              | 底库 `gallery.db` + 事件 `events.db`                    |
+| `IDENTIFY_THRESHOLD`       | `0.42`                | 1:N 相似度阈值，**须在私有数据上标定**                             |
+| `VERIFY_THRESHOLD`         | `0.42`                | 1:1 验证阈值，可与 1:N 分开标定                                |
+| `STRANGER_ALERT_ENABLED`   | `true`                | 识别响应中启用 `alert` 字段（陌生人告警）                           |
+| `EVENT_LOG_ENABLED`        | `true`                | 识别/验证事件持久化                                          |
+| `EVENT_LOG_RETENTION_DAYS` | `90`                  | 事件保留天数，启动时自动清理过期记录                                  |
+| `LIVENESS_ENABLED`         | `true`                | 启用被动活体                                              |
+| `LIVENESS_ON_IDENTIFY`     | `true`                | 识别时强制活体（门禁推荐）                                       |
+| `LIVENESS_ON_VERIFY`       | `true`                | 1:1 验证时强制活体                                         |
+| `API_KEY`                  | 空                     | **生产必设**；请求头 `X-API-Key`                            |
+| `RECOG_MODEL_NAME`         | `glint360k_r100.onnx` | 识别模型；目录多文件时优先此文件；换模型须重建底库                           |
+
+
 
 
 ### 鉴权（生产必开）
@@ -261,6 +375,8 @@ API_KEY=your-production-secret
 curl -H "X-API-Key: your-production-secret" ...
 ```
 
+
+
 ### 阈值标定
 
 公开 IJB-C 分数 ≠ 业务可用。请在 **真实摄像头 + 真实底库** 上标定 `IDENTIFY_THRESHOLD`（目标 FAR/FPIR 见项目 `docs/buffalo_l生产应用评估报告.md`）。
@@ -268,18 +384,20 @@ curl -H "X-API-Key: your-production-secret" ...
 ## 工业级能力说明
 
 
-| 能力      | 实现                                                   |
-| ------- | ---------------------------------------------------- |
-| 1:N 多模板 | 每人最多 5 张，检索时按 **同人最高相似度** 聚合                         |
-| 1:1 验证  | 探针与指定人员所有注册模板取最高相似度，独立 `VERIFY_THRESHOLD`            |
-| 陌生人告警  | identify 返回 `is_stranger` + `alert`，事件写入审计库              |
-| 事件审计    | identify/verify 自动落库，支持 `/v1/events` 与 `/v1/stats` 查询   |
-| 被动活体    | MiniFASNet V1SE + V2 双模型 ensemble                    |
-| 质量门控    | 检测置信度、最小人脸尺寸                                         |
-| GPU/CPU | ONNXRuntime `CUDAExecutionProvider` 优先，不可用自动回退 CPU   |
-| 持久化     | SQLite 存元数据+向量，FAISS 内存索引，容器卷 `/data`                |
-| 可观测     | `/v1/health`、`/v1/ready`、响应 `latency_ms`、标准错误码       |
-| 可升级     | `FaceEngine` 抽象层，可换 InspireFace/TensorRT 而不改 HTTP 契约 |
+| 能力      | 实现                                                                  |
+| ------- | ------------------------------------------------------------------- |
+| 1:N 多模板 | 每人最多 5 张，检索时按 **同人最高相似度** 聚合                                        |
+| 1:1 验证  | 探针与指定人员所有注册模板取最高相似度，独立 `VERIFY_THRESHOLD`                           |
+| 陌生人告警   | identify 返回 `is_stranger` + `alert`，事件写入审计库                         |
+| 事件审计    | identify/verify 自动落库，支持 `/v1/events` 与 `/v1/stats` 查询               |
+| 被动活体    | MiniFASNet V1SE + V2 双模型 ensemble                                   |
+| 质量门控    | 检测置信度、最小人脸尺寸                                                        |
+| GPU/CPU | ONNXRuntime `CUDAExecutionProvider` 优先，不可用自动回退 CPU                  |
+| 持久化     | SQLite 存元数据+向量，FAISS 内存索引，数据目录 `./data`（Docker 挂载至 `/service/data`） |
+| 可观测     | `/v1/health`、`/v1/ready`、响应 `latency_ms`、标准错误码                      |
+| 可升级     | `FaceEngine` 抽象层，可换 InspireFace/TensorRT 而不改 HTTP 契约                |
+
+
 
 
 ### 活体检测说明
@@ -287,7 +405,9 @@ curl -H "X-API-Key: your-production-secret" ...
 - **类型**：单帧 RGB **被动活体**（Silent-Face-Anti-Spoofing / MiniFASNet）
 - **适用**：拦截打印照片、屏幕翻拍等常见攻击
 - **局限**：不能替代高安全场景的 **动作活体**（眨眼/转头）或 **红外活体**；金融/支付级需额外模块
-- **注册**：默认也做活体；管理员可信底库图可用 `skip_liveness=true`（慎用）
+- **注册**：默认也做活体；开发环境可用 `skip_liveness=true`（`ENVIRONMENT=production` 时返回 403）
+
+
 
 ### 商用许可
 
@@ -302,7 +422,7 @@ cd deploy
 ./scripts/run_dev.sh              # 自动设置 LD_LIBRARY_PATH 并启动（GPU 优先）
 
 # 测试
-curl -s http://localhost:8000/v1/health | python3 -m json.tool
+curl -s http://localhost:8123/v1/health | python3 -m json.tool
 # "device": "cuda:0" 或 "cpu"
 ```
 
@@ -318,43 +438,51 @@ $PYTHON -c "import onnxruntime as ort; print(ort.get_available_providers())"
 
 ```
 
+
+
 ## 性能扩展路径
 
-1. **水平扩容**：`docker compose up --scale face-api=3` + Nginx 负载均衡（底库需共享 `/data` 卷或迁移 Milvus）
+1. **水平扩容**：`docker compose up --scale face-api=3` + Nginx 负载均衡（底库需共享 `./data` 卷或迁移 Milvus）
 2. **推理加速**：实现新的 `FaceEngine` 后端（TensorRT / InspireFace C++）
 3. **大库 1:N**：底库 >10 万时建议迁移 **Milvus** 向量库
+
+
 
 ## 错误码
 
 
-| code                | 含义                             |
-| ------------------- | ------------------------------ |
-| `FACE_NOT_DETECTED` | 未检测到人脸                         |
-| `LIVENESS_FAILED`   | 活体未通过                          |
-| `LOW_FACE_QUALITY`  | 质量不达标                          |
-| `NO_MATCH`          | 识别成功但无超过阈值的身份（`matched=false`） |
-| `NO_ENROLLED_FACES` | 人员存在但未注册人脸（verify 时）          |
-| `GALLERY_EMPTY`     | 底库为空                           |
-| `EVENT_LOG_DISABLED`| 事件日志已关闭（`/v1/events` 不可用）     |
-| `UNAUTHORIZED`      | API Key 无效                     |
+| code                 | 含义                             |
+| -------------------- | ------------------------------ |
+| `FACE_NOT_DETECTED`  | 未检测到人脸                         |
+| `LIVENESS_FAILED`    | 活体未通过                          |
+| `LOW_FACE_QUALITY`   | 质量不达标                          |
+| `NO_MATCH`           | 识别成功但无超过阈值的身份（`matched=false`） |
+| `NO_ENROLLED_FACES`  | 人员存在但未注册人脸（verify 时）           |
+| `GALLERY_EMPTY`      | 底库为空                           |
+| `EVENT_LOG_DISABLED` | 事件日志已关闭（`/v1/events` 不可用）      |
+| `UNAUTHORIZED`       | API Key 无效                     |
 
 
-完整 OpenAPI：`http://localhost:8000/docs`
+完整接口说明见 [docs/API.md](docs/API.md)；交互式 OpenAPI：`http://localhost:8123/docs`
 
 ## 测试
 
-| 脚本 | 说明 |
-| ---- | ---- |
-| `[deploy_test/latency_benchmark.py](../deploy_test/latency_benchmark.py)` | 注册 + 1:N 识别时延基准 |
+
+| 脚本                                                                          | 说明                         |
+| --------------------------------------------------------------------------- | -------------------------- |
+| `[deploy_test/latency_benchmark.py](../deploy_test/latency_benchmark.py)`   | 注册 + 1:N 识别时延基准            |
 | `[deploy_test/feature_smoke_test.py](../deploy_test/feature_smoke_test.py)` | 1:1 验证、陌生人告警、统计、事件审计功能冒烟测试 |
+
 
 快速功能测试（服务已启动后）：
 
 ```bash
 ./deploy_test/run_feature_test.sh
 # 默认：清库 → 注册 wjr/zjy/whd 三人 → 全 API 冒烟 → 清理
-SKIP_LIVENESS=true ./deploy_test/run_feature_test.sh   # 调试跳过活体
+SKIP_LIVENESS=true ./deploy_test/run_feature_test.sh   # 开发环境调试跳过活体（生产环境不可用）
 ```
+
+
 
 ## 时延基准测试
 

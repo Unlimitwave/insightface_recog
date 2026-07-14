@@ -1,56 +1,32 @@
-# Base compose (dev): bind-mount app for hot reload.
-# Prefer: ./scripts/compose_up.sh  (auto GPU/CPU)
-# Manual:
-#   RUNTIME=gpu docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+# Base compose — shared service definition.
+# Overlays (pick one):
+#   dev:  docker-compose.dev.yml   (bind-mount app, uvicorn --reload)
+#   prod: docker-compose.prod.yml (image-bundled app, no reload)
+#
+# Quick start:
+#   ./scripts/compose_up.sh              # dev (default)
+#   COMPOSE_MODE=prod ./scripts/compose_up.sh
+#
+# GPU/CPU runtime overlays: docker-compose.gpu.yml | docker-compose.cpu.yml
+#
+# Paths in .env use ./models, ./data — resolved from WORKDIR /service in the container.
 
 services:
   face-api:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    working_dir: /service
     build:
       context: .
       dockerfile: Dockerfile
       args:
         RUNTIME: ${RUNTIME:-gpu}
+        TARGETPLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
     image: facerecog-access-control:${RUNTIME:-gpu}
     ports:
-      - "8000:8000"
-    environment:
-      - DEVICE=${DEVICE:-auto}
-      - INSIGHTFACE_ROOT=/models/insightface
-      - FACE_MODEL_PACK=buffalo_l
-      - ANTISPOOF_MODEL_DIR=/models/antispoof
-      - DATA_DIR=/data
-      - IDENTIFY_THRESHOLD=0.42
-      - LIVENESS_ENABLED=true
-      - LIVENESS_ON_ENROLL=true
-      - LIVENESS_ON_IDENTIFY=true
-      - LIVENESS_THRESHOLD=0.5
-      # - API_KEY=change-me-in-production
+      - "${PORT:-8123}:${PORT:-8123}"
+    env_file:
+      - .env
     volumes:
-      # Hot-reload: edit host ./app, uvicorn --reload picks up changes
-      - ./app:/app/app
-      # Host InsightFace models (buffalo_l)
-      - ${INSIGHTFACE_HOST_MODELS:-~/.insightface}:/models/insightface:ro
-      # Liveness ONNX models (run scripts/download_models.sh first)
-      - ./models/antispoof:/models/antispoof:ro
-      # Persistent gallery database + FAISS index
-      - face-gallery-data:/data
-    # Dev server with file watching (drop --reload for production images)
-    command:
-      [
-        "python3",
-        "-m",
-        "uvicorn",
-        "app.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-        "--reload",
-        "--reload-dir",
-        "/app/app",
-      ]
+      - ./models:/service/models:ro
+      - ./data:/service/data
     restart: unless-stopped
-
-volumes:
-  face-gallery-data:
